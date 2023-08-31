@@ -1,0 +1,54 @@
+{
+  "name": "canvas-image-editor",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "author": "Dono da Internet",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start": "nodemon --watch src --watch 'package.json' --ext ts --exec npm run build:dev",
+    "build:dev": "npm run build:clean && npm run lint && npm run compile && npm run webpack",
+    "build": "npm run build:clean && npm run lint && npm run compile && npm run webpack && npm run test",
+    "build:clean": "rimraf ./dist/* && rimraf tsconfig.tsbuildinfo",
+    "lint": "eslint ./src --ext .ts",
+    "lint:fix": "eslint ./src --ext .ts --fix",
+    "compile": "tsc --build --clean && tsc",
+    "webpack": "webpack",
+    "test": "jest"
+  },
+  "dependencies": {
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.4",
+    "@types/node": "^20.4.8",
+    "@types/yargs": "^17.0.24",
+    "@typescript-eslint/eslint-plugin": "^6.2.1",
+    "@typescript-eslint/parser": "^6.2.1",
+    "eslint": "^8.46.0",
+    "eslint-config-google": "^0.14.0",
+    "jest": "^29.6.2",
+    "nodemon": "^3.0.1",
+    "rimraf": "^5.0.1",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6",
+    "webpack": "^5.74.0",
+    "webpack-cli": "^4.10.0",
+    "yargs-parser": "^21.1.1",
+    "@babel/core": "^7.18.13",
+    "@babel/preset-env": "^7.18.10",
+    "babel-loader": "^8.2.5",
+    "webpack-dev-server": "^4.10.0"
+  }
+}
