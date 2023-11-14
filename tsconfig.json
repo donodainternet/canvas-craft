@@ -26,7 +26,17 @@
   },
   "include": [
     "./src/*.ts",
-    "./src/typings/*"
+    "./src/typings/*",
+    "src/uses/grayScale.ts",
+    "src/uses/sepiaTone.ts",
+    "src/uses/backgroundBlur.ts",
+    "src/uses/backgroundReplace.ts",
+    "src/uses/backgroundColor.ts",
+    "src/masks/imageMask.ts",
+    "src/composes/toPNG.ts",
+    "src/constrains/TargetQuality.ts",
+    "src/constrains/LayerIndex.ts",
+    "src/constrains/CanvasEdge.ts"
   ],
   "exclude": [
     "jest"

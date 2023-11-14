@@ -1,1 +1,0 @@
-{"version":3,"file":"ElementImage.js","sourceRoot":"","sources":["../src/ElementImage.ts"],"names":[],"mappings":";;;AAAA,MAAa,YAAY;IAGvB,YAAY,KAAuB;QACjC,IAAI,CAAC,MAAM,GAAG,KAAK,CAAC;IACtB,CAAC;IAED,OAAO;QACL,OAAO,IAAI,CAAC;IACd,CAAC;IAED,YAAY;QACV,OAAO,IAAI,CAAC,MAAM,CAAC;IACrB,CAAC;CACF;AAdD,oCAcC"}

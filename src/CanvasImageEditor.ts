@@ -1,15 +1,18 @@
+/* eslint-disable max-len */
 import {
   ComposeTargetFunction,
   Logger,
   ProcessingError,
-  TargetMimetype,
+  CoordinatePoint,
 } from './typings/CanvasImageEditor';
 import {ConsoleLogger} from './CanvasImageEditorLogger';
 import {Canvas} from './Canvas';
-import {ElementImage} from './ElementImage';
+import {ImageBitmap} from './ImageBitmap';
 import {Layer} from './Layer';
 import {ComposeResult} from './ComposeResult';
-import {TargetQuality} from './TargetQuality';
+import {toPNG} from './composes/toPNG';
+import {ImageSVG} from './ImageSVG';
+import {drawArbitraryQuadImage, FILL_METHOD} from 'canvas-arbitrary-quads';
 
 export class CanvasImageEditor {
   private _canvas: Canvas;
@@ -47,25 +50,29 @@ export class CanvasImageEditor {
       };
       processNext(0);
     });
-    // for (const promiseFn of this._promiseQueue) {
-    //   await promiseFn();
-    // }
+
     this._promiseQueue = [];
   }
 
   compose(targetFunction:
-      ComposeTargetFunction = toBase64('image/png')): Promise<ComposeResult> {
-    return new Promise<ComposeResult>((resolve, reject) => {
+      ComposeTargetFunction = toPNG()):
+            Promise<[ComposeResult, HTMLCanvasElement]> {
+    return new Promise<[ComposeResult, HTMLCanvasElement]>((resolve, reject) =>{
       try {
         this.processPromiseQueue()
             .then(() => {
               this._canvas.compose();
+              const composePromises = this._layers.map(
+                  (layer) => {
+                    return layer.compose(this._canvas);
+                  });
+              return Promise.all(composePromises);
+            })
+            .then(() => {
+              this._canvas.end();
               const htmlCanvas = this._canvas.htmlCanvas();
-              this._layers.forEach((layer) => {
-                layer.compose(htmlCanvas);
-              });
-              const composeResult = targetFunction(this._canvas.htmlCanvas());
-              resolve(composeResult);
+              const composeResult = targetFunction(htmlCanvas);
+              resolve([composeResult, htmlCanvas]);
             })
             .catch((error) => {
               reject(error);
@@ -111,7 +118,342 @@ export class CanvasImageEditor {
     return this;
   }
 
-  placeImage(URL: URL, x: number = 0, y: number = 0): this {
+  mask(mask: () => Promise<void>): this {
+    this.enqueuePromise(async () => {
+      this._layers.forEach((layer) => {
+        layer.mask(mask);
+      });
+    });
+    return this;
+  }
+
+  use(filter: () => Promise<void>): this {
+    this.enqueuePromise(async () => {
+      this._layers.forEach((layer) => {
+        layer.use(filter);
+      });
+    });
+    return this;
+  }
+
+  text(
+      svgContent: string,
+      fontCssUrl: URL[],
+      x: number = 0,
+      y: number = 0,
+      boundaryWidth?: number,
+      boundaryHeight?: number): this {
+    this.enqueuePromise(async () => {
+      function convertFontsFilesToBase64Data(fontCssUrl) {
+        return new Promise((resolve, reject) => {
+          if (Object.keys(fontCssUrl).length) {
+            let svgCss = null;
+
+            fontCssUrl.reduce((chain, url) => {
+              return chain
+                  .then(() => fetch(url))
+                  .then((response) => {
+                    if (!response.ok) {
+                      throw new Error(`Failed to load ${url}`);
+                    }
+                    return response.text();
+                  })
+                  .then((fontCss) => {
+                    svgCss += fontCss;
+                  })
+                  .catch((error) => {
+                    console.error('Error loading font CSS:', error);
+                  });
+            }, Promise.resolve())
+
+                .then(() => {
+                  const fontUrl = Array.from(svgCss.matchAll(/url\(([^)]+)\)/g), (m) => m[1]);
+                  return Promise.all(
+                      fontUrl.map((url) => {
+                        return fetch(url)
+                            .then(async (response) => {
+                              if (!response.ok) {
+                                throw new Error(`Failed to load ${url}`);
+                              }
+                              return {url, response: await response.arrayBuffer()};
+                            });
+                      }));
+                })
+
+                .then((fontContents) => {
+                  const urlDataPromises = fontContents.map((fontContent) => {
+                    const uint8Array = new Uint8Array(fontContent.response);
+                    let binary = '';
+                    uint8Array.forEach((byte) => {
+                      binary += String.fromCharCode(byte);
+                    });
+                    const base64 = btoa(binary);
+                    return {url: fontContent.url, base64};
+                  });
+                  return Promise.all(urlDataPromises);
+                })
+
+                .then((base64Fonts) => {
+                  return Promise.all(base64Fonts.map(({url, base64}) => {
+                    svgCss = svgCss.replace(new RegExp(url, 'g'), `'data:font/woff2;base64,${base64}'`);
+                  }));
+                })
+
+                .then(() => {
+                  resolve(svgCss);
+                })
+
+                .catch((error) => {
+                  reject(error);
+                });
+          } else {
+            resolve('');
+          }
+        });
+      }
+
+      await convertFontsFilesToBase64Data(fontCssUrl)
+
+          .then((svgCss) => {
+            const svgData =
+              `<svg xmlns="http://www.w3.org/2000/svg" text-anchor="middle" x="0" y="0" width="${this._canvas.width()}" height="${this._canvas.height()}" viewbox="0 0 ${this._canvas.width()} ${this._canvas.height()}">
+              <defs>
+                <style type="text/css">
+                  ${svgCss}
+                </style>
+              </defs>
+                ${svgContent}
+              </svg>`;
+            return new Promise<HTMLImageElement>((resolve, reject) => {
+              const image = new Image();
+              image.addEventListener('load', () => {
+                resolve(image);
+              });
+              image.addEventListener('error', (error) => {
+                reject(error);
+              });
+              image.src = `data:image/svg+xml;base64,${btoa(svgData)}`;
+            });
+          })
+
+          .then((image) => {
+            let layerWidth = image.width;
+            let layerHeight = image.height;
+            let boundaryAspectRatio;
+            let imageAspectRatio;
+            if (boundaryWidth !== undefined && boundaryHeight !== undefined) {
+              boundaryAspectRatio = boundaryWidth / boundaryHeight;
+              imageAspectRatio = layerWidth / layerHeight;
+              if (boundaryAspectRatio > imageAspectRatio) {
+                layerHeight = Math.min(boundaryHeight, layerHeight);
+                layerWidth = layerHeight * imageAspectRatio;
+              } else {
+                layerWidth = Math.min(boundaryWidth, layerWidth);
+                layerHeight = layerWidth / imageAspectRatio;
+              }
+            }
+            if ((x < 0 || y < 0) &&
+                (!this._canvas.width() || !this._canvas.height())) {
+              throw new Error(`The first image on the canvas ` +
+                              `should not have negative x or y coordinates.`);
+            }
+            if (x < 0) {
+              x = this._canvas.width() - (layerWidth + x * -1);
+            }
+            if (y < 0) {
+              y = this._canvas.height() - (layerHeight + y * -1);
+            }
+            const imageElement = new ImageSVG(image);
+            const layerIndex = this._layers.length;
+            const layer = new Layer(
+                imageElement,
+                x, y,
+                layerWidth, layerHeight,
+                layerIndex);
+            this._layers.push(layer);
+            if (!this._canvas.width() || !this._canvas.height()) {
+              this.fitCanvasToContent();
+            }
+          })
+          .catch((error) => {
+            console.error('Erro ao carregar a imagem:', error);
+          });
+    });
+
+    return this;
+  }
+
+  placeVector(
+      svgContent: string,
+      x: number = 0,
+      y: number = 0,
+      boundaryWidth?: number,
+      boundaryHeight?: number): this {
+    this.enqueuePromise(async () => {
+      const svgData =
+      `<svg xmlns="http://www.w3.org/2000/svg" text-anchor="middle" x="0" y="0" width="${this._canvas.width()}" height="${this._canvas.height()}" viewbox="0 0 ${this._canvas.width()} ${this._canvas.height()}">
+        ${svgContent}
+      </svg>`;
+      const image = new Image();
+      const loadImagePromise = new Promise<void>((resolve, reject) => {
+        image.addEventListener('load', () => {
+          resolve();
+        });
+        image.addEventListener('error', (error) => {
+          reject(error);
+        });
+      });
+
+      image.src = `data:image/svg+xml;base64,${btoa(svgData)}`;
+
+      await loadImagePromise;
+
+      let layerWidth = image.width;
+      let layerHeight = image.height;
+      let boundaryAspectRatio;
+      let imageAspectRatio;
+
+      if (boundaryWidth !== undefined && boundaryHeight !== undefined) {
+        boundaryAspectRatio = boundaryWidth / boundaryHeight;
+        imageAspectRatio = layerWidth / layerHeight;
+        if (boundaryAspectRatio > imageAspectRatio) {
+          layerHeight = Math.min(boundaryHeight, layerHeight);
+          layerWidth = layerHeight * imageAspectRatio;
+        } else {
+          layerWidth = Math.min(boundaryWidth, layerWidth);
+          layerHeight = layerWidth / imageAspectRatio;
+        }
+      }
+
+      if ((x < 0 || y < 0) &&
+          (!this._canvas.width() || !this._canvas.height())) {
+        throw new Error(`The first image on the canvas ` +
+                        `should not have negative x or y coordinates.`);
+      }
+
+      if (x < 0) {
+        x = this._canvas.width() - (layerWidth + x * -1);
+      }
+      if (y < 0) {
+        y = this._canvas.height() - (layerHeight + y * -1);
+      }
+
+      const imageElement = new ImageSVG(image);
+      const layerIndex = this._layers.length;
+      const layer = new Layer(
+          imageElement,
+          x, y,
+          layerWidth, layerHeight,
+          layerIndex);
+      this._layers.push(layer);
+      if (!this._canvas.width() || !this._canvas.height()) {
+        this.fitCanvasToContent();
+      }
+    });
+
+    return this;
+  }
+
+  placeSVG(URL: URL,
+      x: number = 0,
+      y: number = 0,
+      boundaryWidth?: number,
+      boundaryHeight?: number): this {
+    this.enqueuePromise(async () => {
+      let svgContent = null;
+      const loadSVGPromise = new Promise<void>((resolve, reject) => {
+        fetch(URL.toString())
+            .then((response) => {
+              if (!response.ok) {
+                throw new Error('Failed to fetch SVG file');
+              }
+              return response.text();
+            })
+            .then((fileContent) => {
+              svgContent = fileContent;
+              resolve();
+            })
+            .catch((error) => {
+              reject(error);
+            });
+      });
+
+      await loadSVGPromise;
+
+      const parser = new DOMParser();
+      const svgDoc = parser
+          .parseFromString(
+              svgContent,
+              'image/svg+xml');
+
+      const viewBox = svgDoc.documentElement.getAttribute('viewBox');
+      const [, , width, height] = viewBox.split(' ').map(parseFloat);
+
+      svgDoc.documentElement.setAttribute('width', width.toString());
+      svgDoc.documentElement.setAttribute('height', height.toString());
+
+      const correctedSVG = new XMLSerializer()
+          .serializeToString(svgDoc.documentElement);
+
+      const base64SVG = btoa(correctedSVG);
+
+      const image = new Image();
+      image.src = `data:image/svg+xml;base64,${base64SVG}`;
+      image.width = width;
+      image.height = height;
+
+      let layerWidth = image.width;
+      let layerHeight = image.height;
+
+      let boundaryAspectRatio;
+      let imageAspectRatio;
+
+      if (boundaryWidth !== undefined && boundaryHeight !== undefined) {
+        boundaryAspectRatio = boundaryWidth / boundaryHeight;
+        imageAspectRatio = layerWidth / layerHeight;
+        if (boundaryAspectRatio > imageAspectRatio) {
+          layerHeight = Math.min(boundaryHeight, layerHeight);
+          layerWidth = layerHeight * imageAspectRatio;
+        } else {
+          layerWidth = Math.min(boundaryWidth, layerWidth);
+          layerHeight = layerWidth / imageAspectRatio;
+        }
+      }
+
+      if ((x < 0 || y < 0) &&
+          (!this._canvas.width() || !this._canvas.height())) {
+        throw new Error(`The first image on the canvas ` +
+                        `should not have negative x or y coordinates.`);
+      }
+
+      if (x < 0) {
+        x = this._canvas.width() - (layerWidth + x * -1);
+      }
+      if (y < 0) {
+        y = this._canvas.height() - (layerHeight + y * -1);
+      }
+
+      const imageElement = new ImageSVG(image);
+      const layerIndex = this._layers.length;
+      const layer = new Layer(
+          imageElement,
+          x, y,
+          layerWidth, layerHeight,
+          layerIndex);
+      this._layers.push(layer);
+      if (!this._canvas.width() || !this._canvas.height()) {
+        this.fitCanvasToContent();
+      }
+    });
+
+    return this;
+  }
+
+  placeImage(URL: URL,
+      x: number = 0,
+      y: number = 0,
+      boundaryWidth?: number,
+      boundaryHeight?: number): this {
     this.enqueuePromise(async () => {
       const image = new Image();
       const loadImagePromise = new Promise<void>((resolve, reject) => {
@@ -127,13 +469,47 @@ export class CanvasImageEditor {
 
       await loadImagePromise;
 
-      const imageElement = new ElementImage(image);
-      const width = image.width;
-      const height = image.height;
+      let layerWidth = image.width;
+      let layerHeight = image.height;
+      let boundaryAspectRatio;
+      let imageAspectRatio;
+
+      if (boundaryWidth !== undefined && boundaryHeight !== undefined) {
+        boundaryAspectRatio = boundaryWidth / boundaryHeight;
+        imageAspectRatio = layerWidth / layerHeight;
+        if (boundaryAspectRatio > imageAspectRatio) {
+          layerHeight = Math.min(boundaryHeight, layerHeight);
+          layerWidth = layerHeight * imageAspectRatio;
+        } else {
+          layerWidth = Math.min(boundaryWidth, layerWidth);
+          layerHeight = layerWidth / imageAspectRatio;
+        }
+      }
+
+      if ((x < 0 || y < 0) &&
+          (!this._canvas.width() || !this._canvas.height())) {
+        throw new Error(`The first image on the canvas ` +
+                        `should not have negative x or y coordinates.`);
+      }
+
+      if (x < 0) {
+        x = this._canvas.width() - (layerWidth + x * -1);
+      }
+      if (y < 0) {
+        y = this._canvas.height() - (layerHeight + y * -1);
+      }
+
+      const imageElement = new ImageBitmap(image);
       const layerIndex = this._layers.length;
-      const layer = new Layer(imageElement, x, y, width, height, layerIndex);
+      const layer = new Layer(
+          imageElement,
+          x, y,
+          layerWidth, layerHeight,
+          layerIndex);
       this._layers.push(layer);
-      this.fitCanvasToContent();
+      if (!this._canvas.width() || !this._canvas.height()) {
+        this.fitCanvasToContent();
+      }
     });
 
     return this;
@@ -202,15 +578,43 @@ export class CanvasImageEditor {
       this._canvas.width(width);
       this._canvas.height(height);
       this._layers.forEach((layer) => {
+        // layer.width(width);
+        // layer.height(height);
         if (x > 0) {
-          // layer.width(width);
-          // layer.height(height);
           layer.offsetX(layer.offsetX() - x);
         }
         if (y > 0) {
           layer.offsetY(layer.offsetY() - y);
         }
       });
+    });
+    return this;
+  }
+
+  transform(a: CoordinatePoint, b: CoordinatePoint, c: CoordinatePoint, d: CoordinatePoint): this {
+    this.enqueuePromise(async () => {
+      const canvasWidth = this._canvas.width();
+      const canvasHeight = this._canvas.height();
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      const context = canvas.getContext('2d');
+
+      const srcPoints = [
+        {x: 0, y: 0},
+        {x: 0, y: canvasHeight},
+        {x: canvasWidth, y: canvasHeight},
+        {x: canvasWidth, y: 0},
+      ];
+
+      const dstPoints = [
+        {x: a.x, y: a.y},
+        {x: d.x, y: d.y},
+        {x: c.x, y: c.y},
+        {x: canvasWidth - b.x, y: canvasHeight - b.y},
+      ];
+
+      drawArbitraryQuadImage(context, canvas, srcPoints, dstPoints, FILL_METHOD.BILINEAR);
     });
     return this;
   }
@@ -251,15 +655,4 @@ export class CanvasImageEditor {
     });
     return this;
   }
-}
-
-export function toBase64(
-    mimetype?: TargetMimetype,
-    quality?: number): ComposeTargetFunction {
-  return (canvas) => {
-    const targetQuality = new TargetQuality(quality);
-    const base64Data = canvas.toDataURL(mimetype, targetQuality.value);
-    const composeResult = new ComposeResult(base64Data, mimetype, 'base64');
-    return composeResult;
-  };
 }

@@ -13,7 +13,7 @@ export class ComposeResult {
   }
 
   private validateResult() {
-    const regex = `^data:${this._mimetype};base64,[A-Za-z0-9+/=]+$`;
+    const regex = `^data:image/octet-stream;base64,[A-Za-z0-9+/=]+$`;
     const base64Regex = new RegExp(regex);
     if (!base64Regex.test(this._data)) {
       throw new Error(`Invalid base64 string`);

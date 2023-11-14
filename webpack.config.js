@@ -10,7 +10,7 @@ module.exports = {
     libraryTarget: 'window',
   },
   resolve: {
-    extensions: ['.ts', '.js'],
+    extensions: ['.ts', '.js']
   },
   module: {
     rules: [
@@ -20,5 +20,5 @@ module.exports = {
         exclude: /node_modules/,
       },
     ],
-  },
+  }
 };

@@ -1,9 +1,11 @@
-import {CanvasEdge} from './CanvasEdge';
-import {LayerIndex} from './LayerIndex';
-import {ElementImage} from './ElementImage';
+import {CanvasEdge} from './constrains/CanvasEdge';
+import {LayerIndex} from './constrains/LayerIndex';
+import {ImageBitmap} from './ImageBitmap';
+import {Canvas} from './Canvas';
+import {ImageSVG} from './ImageSVG';
 
 export class Layer {
-  private _element: ElementImage;
+  private _element: ImageBitmap | ImageSVG;
   private _x: CanvasEdge;
   private _y: CanvasEdge;
   private _index: LayerIndex;
@@ -12,7 +14,7 @@ export class Layer {
   private _originalAspectRatio: CanvasEdge;
 
   constructor(
-      element: ElementImage,
+      element: ImageBitmap | ImageSVG,
       x: number,
       y: number,
       width: number,
@@ -26,41 +28,34 @@ export class Layer {
     this._index = new LayerIndex(index);
   }
 
-  // compose(canvas: HTMLCanvasElement) {
-  //   this._element.compose();
-  //   const imageElement = this._element.imageElement();
-  //   canvas.getContext('2d')
-  //       // .drawImage(imageElement, 52, 0, 172, 172, 0, 0, 48, 48);
-  //       .drawImage(
-  //           imageElement,
-  //           this.offsetX() * -1 * (imageElement.width / this.width()),
-  //           this.offsetY() * -1 * (imageElement.height / this.height()),
-  //           (this.width() + 2 * this.offsetX()) *
-  //             (imageElement.width/this.width()),
-  //           (this.height() + 2 * this.offsetY()) *
-  //             (imageElement.height/this.height()),
-  //           0,
-  //           0,
-  //           this.width() + 2 * this.offsetX(),
-  //           this.height() + 2 * this.offsetY());
-  //   return this;
-  // }
+  use(filter: () => Promise<void>) {
+    this._element.use(filter);
+  }
 
-  compose(canvas: HTMLCanvasElement) {
-    this._element.compose();
-    const imageElement = this._element.imageElement();
-    canvas.getContext('2d').drawImage(
-        imageElement,
-        this.offsetX() * -1 * (imageElement.width / this.width()),
-        this.offsetY() * -1 * (imageElement.height / this.height()),
-        (this.width() +2*this.offsetX()) * (imageElement.width/this.width()),
-        (this.height() +2*this.offsetY()) * (imageElement.height/this.height()),
-        0,
-        0,
-        this.width() + 2 * this.offsetX(),
-        this.height() + 2 * this.offsetY()
-    );
-    return this;
+  mask(mask: () => Promise<void>) {
+    this._element.mask(mask);
+  }
+
+  compose(canvas: Canvas): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      try {
+        this._element
+            .compose(
+                canvas,
+                this.offsetX(),
+                this.offsetY(),
+                this.width(),
+                this.height())
+            .then(() => {
+              resolve();
+            })
+            .catch((error) => {
+              reject(error);
+            });
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 
   resize(resizeProportion: number) {
